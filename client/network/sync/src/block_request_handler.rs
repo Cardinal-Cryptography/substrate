@@ -25,7 +25,6 @@ use futures::{
 };
 use libp2p::PeerId;
 use log::debug;
-use lru::LruCache;
 use prost::Message;
 use sc_client_api::BlockBackend;
 use sc_network_common::{
@@ -40,27 +39,14 @@ use sp_runtime::{
 };
 use std::{
 	cmp::min,
-	hash::{Hash, Hasher},
-	num::NonZeroUsize,
 	sync::Arc,
 	time::Duration,
+ marker::PhantomData,
 };
 
 const LOG_TARGET: &str = "sync";
 const MAX_BLOCKS_IN_RESPONSE: usize = 128;
 const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
-const MAX_NUMBER_OF_SAME_REQUESTS_PER_PEER: usize = 2;
-
-mod rep {
-	use sc_peerset::ReputationChange as Rep;
-
-	/// Reputation change when a peer sent us the same request multiple times.
-	pub const SAME_REQUEST: Rep = Rep::new_fatal("Same block request multiple times");
-
-	/// Reputation change when a peer sent us the same "small" request multiple times.
-	pub const SAME_SMALL_REQUEST: Rep =
-		Rep::new(-(1 << 10), "same small block request multiple times");
-}
 
 /// Generates a [`ProtocolConfig`] for the block request protocol, refusing incoming requests.
 pub fn generate_protocol_config<Hash: AsRef<[u8]>>(
@@ -94,48 +80,11 @@ fn generate_legacy_protocol_name(protocol_id: &ProtocolId) -> String {
 	format!("/{}/sync/2", protocol_id.as_ref())
 }
 
-/// The key of [`BlockRequestHandler::seen_requests`].
-#[derive(Eq, PartialEq, Clone)]
-struct SeenRequestsKey<B: BlockT> {
-	peer: PeerId,
-	from: BlockId<B>,
-	max_blocks: usize,
-	direction: Direction,
-	attributes: BlockAttributes,
-	support_multiple_justifications: bool,
-}
-
-#[allow(clippy::derive_hash_xor_eq)]
-impl<B: BlockT> Hash for SeenRequestsKey<B> {
-	fn hash<H: Hasher>(&self, state: &mut H) {
-		self.peer.hash(state);
-		self.max_blocks.hash(state);
-		self.direction.hash(state);
-		self.attributes.hash(state);
-		self.support_multiple_justifications.hash(state);
-		match self.from {
-			BlockId::Hash(h) => h.hash(state),
-			BlockId::Number(n) => n.hash(state),
-		}
-	}
-}
-
-/// The value of [`BlockRequestHandler::seen_requests`].
-enum SeenRequestsValue {
-	/// First time we have seen the request.
-	First,
-	/// We have fulfilled the request `n` times.
-	Fulfilled(usize),
-}
-
 /// Handler for incoming block requests from a remote peer.
 pub struct BlockRequestHandler<B: BlockT, Client> {
 	client: Arc<Client>,
 	request_receiver: mpsc::Receiver<IncomingRequest>,
-	/// Maps from request to number of times we have seen this request.
-	///
-	/// This is used to check if a peer is spamming us with the same request.
-	seen_requests: LruCache<SeenRequestsKey<B>, SeenRequestsValue>,
+ _phantom: PhantomData<B>,
 }
 
 impl<B, Client> BlockRequestHandler<B, Client>
@@ -165,11 +114,7 @@ where
 		);
 		protocol_config.inbound_queue = Some(tx);
 
-		let capacity =
-			NonZeroUsize::new(num_peer_hint.max(1) * 2).expect("cache capacity is not zero");
-		let seen_requests = LruCache::new(capacity);
-
-		(Self { client, request_receiver, seen_requests }, protocol_config)
+		(Self { client, request_receiver, _phantom: PhantomData }, protocol_config)
 	}
 
 	/// Run [`BlockRequestHandler`].
@@ -219,96 +164,28 @@ where
 
 		let support_multiple_justifications = request.support_multiple_justifications;
 
-		let key = SeenRequestsKey {
-			peer: *peer,
-			max_blocks,
-			direction,
-			from: from_block_id,
-			attributes,
-			support_multiple_justifications,
-		};
-
-		let mut reputation_change = None;
-
-		let small_request = attributes
-			.difference(BlockAttributes::HEADER | BlockAttributes::JUSTIFICATION)
-			.is_empty();
-
-		match self.seen_requests.get_mut(&key) {
-			Some(SeenRequestsValue::First) => {},
-			Some(SeenRequestsValue::Fulfilled(ref mut requests)) => {
-				*requests = requests.saturating_add(1);
-
-				if *requests > MAX_NUMBER_OF_SAME_REQUESTS_PER_PEER {
-					reputation_change = Some(if small_request {
-						rep::SAME_SMALL_REQUEST
-					} else {
-						rep::SAME_REQUEST
-					});
-				}
-			},
-			None => {
-				self.seen_requests.put(key.clone(), SeenRequestsValue::First);
-			},
-		}
-
 		debug!(
 			target: LOG_TARGET,
 			"Handling block request from {peer}: Starting at `{from_block_id:?}` with \
-			maximum blocks of `{max_blocks}`, reputation_change: `{reputation_change:?}`, \
-			small_request `{small_request:?}`, direction `{direction:?}` and \
+			maximum blocks of `{max_blocks}`, direction `{direction:?}` and \
 			attributes `{attributes:?}`.",
 		);
 
-		let maybe_block_response = if reputation_change.is_none() || small_request {
-			let block_response = self.get_block_response(
-				attributes,
-				from_block_id,
-				direction,
-				max_blocks,
-				support_multiple_justifications,
-			)?;
+		let block_response = self.get_block_response(
+			attributes,
+			from_block_id,
+			direction,
+			max_blocks,
+			support_multiple_justifications,
+		)?;
 
-			// If any of the blocks contains any data, we can consider it as successful request.
-			if block_response
-				.blocks
-				.iter()
-				.any(|b| !b.header.is_empty() || !b.body.is_empty() || b.is_empty_justification)
-			{
-				if let Some(value) = self.seen_requests.get_mut(&key) {
-					// If this is the first time we have processed this request, we need to change
-					// it to `Fulfilled`.
-					if let SeenRequestsValue::First = value {
-						*value = SeenRequestsValue::Fulfilled(1);
-					}
-				}
-			}
-
-			Some(block_response)
-		} else {
-			None
-		};
-
-		debug!(
-			target: LOG_TARGET,
-			"Sending result of block request from {peer} starting at `{from_block_id:?}`: \
-			blocks: {:?}, data: {:?}",
-			maybe_block_response.as_ref().map(|res| res.blocks.len()),
-			maybe_block_response.as_ref().map(|res| res.encoded_len()),
-		);
-
-		let result = if let Some(block_response) = maybe_block_response {
-			let mut data = Vec::with_capacity(block_response.encoded_len());
-			block_response.encode(&mut data)?;
-			Ok(data)
-		} else {
-			Err(())
-		};
+		let mut data = Vec::with_capacity(block_response.encoded_len());
+		block_response.encode(&mut data)?;
 
 		pending_response
 			.send(OutgoingResponse {
-				result,
-				reputation_changes: reputation_change.into_iter().collect(),
+				result: Ok(data),
+				reputation_changes: Vec::new(),
 				sent_feedback: None,
 			})
 			.map_err(|_| HandleRequestError::SendResponse)

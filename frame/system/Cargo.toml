@@ -25,7 +25,7 @@ sp-std = { version = "4.0.0", default-features = false, path = "../../primitives
 sp-version = { version = "5.0.0", default-features = false, path = "../../primitives/version" }
 
 [dev-dependencies]
-criterion = "0.3.3"
+criterion = "0.3.6"
 sp-externalities = { version = "0.12.0", path = "../../primitives/externalities" }
 substrate-test-runtime-client = { version = "2.0.0", path = "../../test-utils/runtime/client" }
 

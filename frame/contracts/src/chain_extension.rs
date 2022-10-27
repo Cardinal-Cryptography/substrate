@@ -69,6 +69,9 @@ pub use frame_system::Config as SysConfig;
 pub use pallet_contracts_primitives::ReturnFlags;
 pub use sp_core::crypto::UncheckedFrom;
 pub use state::Init as InitState;
+pub use state::OnlyIn as OnlyInState;
+pub use state::PrimInBufOut as PrimInBufOutState;
+pub use state::BufInBufOut as BufInBufOutState;
 
 /// Result that returns a [`DispatchError`] on error.
 pub type Result<T> = sp_std::result::Result<T, DispatchError>;

@@ -68,10 +68,13 @@ pub use crate::{exec::Ext, Config};
 pub use frame_system::Config as SysConfig;
 pub use pallet_contracts_primitives::ReturnFlags;
 pub use sp_core::crypto::UncheckedFrom;
-pub use state::Init as InitState;
-pub use state::OnlyIn as OnlyInState;
-pub use state::PrimInBufOut as PrimInBufOutState;
-pub use state::BufInBufOut as BufInBufOutState;
+pub use state::{
+	BufInBufOut as BufInBufOutState,
+	PrimInBufOut as PrimInBufOutState,
+	OnlyIn as OnlyInState,
+	Init as InitState,
+	State
+};
 
 /// Result that returns a [`DispatchError`] on error.
 pub type Result<T> = sp_std::result::Result<T, DispatchError>;
@@ -150,7 +153,7 @@ pub enum RetVal {
 ///
 /// It uses [typestate programming](https://docs.rust-embedded.org/book/static-guarantees/typestate-programming.html)
 /// to enforce the correct usage of the parameters passed to the chain extension.
-pub struct Environment<'a, 'b, E: Ext, S: state::State> {
+pub struct Environment<'a, 'b, E: Ext, S: State> {
 	/// The actual data of this type.
 	inner: Inner<'a, 'b, E>,
 	/// `S` is only used in the type system but never as value.
@@ -158,7 +161,7 @@ pub struct Environment<'a, 'b, E: Ext, S: state::State> {
 }
 
 /// Functions that are available in every state of this type.
-impl<'a, 'b, E: Ext, S: state::State> Environment<'a, 'b, E, S>
+impl<'a, 'b, E: Ext, S: State> Environment<'a, 'b, E, S>
 where
 	<E::T as SysConfig>::AccountId: UncheckedFrom<<E::T as SysConfig>::Hash> + AsRef<[u8]>,
 {

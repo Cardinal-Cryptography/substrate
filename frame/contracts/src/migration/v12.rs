@@ -84,7 +84,7 @@ pub struct CodeInfo<T: Config> {
 }
 
 #[storage_alias]
-pub type CodeInfoOf<T: Config> = StorageMap<Pallet<T>, Twox64Concat, CodeHash<T>, CodeInfo<T>>;
+pub type CodeInfoOf<T: Config> = StorageMap<Pallet<T>, Identity, CodeHash<T>, CodeInfo<T>>;
 
 #[storage_alias]
 pub type PristineCode<T: Config> = StorageMap<Pallet<T>, Identity, CodeHash<T>, Vec<u8>>;
